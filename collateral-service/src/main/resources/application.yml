@@ -1,0 +1,113 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: collateral-service
+
+  # PostgreSQL
+  datasource:
+    url: jdbc:postgresql://localhost:5432/collateral_db
+    username: postgres
+    password: 123456
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  # RabbitMQ
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    listener:
+      simple:
+        acknowledge-mode: auto
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 2000
+
+  # Mail Configuration
+  mail:
+    host: smtp.qq.com
+    port: 587
+    username: 2577833134@qq.com
+    password: kimnrlnikpnvdjaf
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
+# Application custom config
+app:
+  reserve:
+    healthy-threshold: 1.10
+    normal-threshold: 1.00
+    warning-threshold: 0.90
+    low-risk-ratio-threshold: 0.80
+    check-interval-ms: 60000
+  issuance-service:
+    base-url: http://localhost:8080
+    api-key: internal-api-key-001
+  risk:
+    large-redemption-ratio: 0.20
+  email:
+    from: noreply@stablecoin-system.com
+    admin-recipients: admin@stablecoin-system.com
+  ml:
+    enabled: true
+    python-script-path: risk_predictor.py
+    model-path: risk_predictor_model.pkl
+
+# RabbitMQ Exchange & Queue names
+mq:
+  exchange:
+    collateral-events: collateral.events
+  queue:
+    reserve-risk-alert: queue.reserve.risk.alert
+    risk-level-change: queue.risk.level.change
+  routing-key:
+    reserve-risk-alert: reserve.risk.alert
+    reserve-healthy: reserve.healthy
+    risk-level-change: risk.level.change
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# Logging
+logging:
+  level:
+    com.stablecoin: DEBUG
+    org.springframework.amqp: INFO
+    org.springframework.mail: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  charset:
+    console: UTF-8
+    file: UTF-8
