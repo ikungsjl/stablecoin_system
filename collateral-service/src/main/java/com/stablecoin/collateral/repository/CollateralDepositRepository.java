@@ -31,4 +31,7 @@ public interface CollateralDepositRepository extends JpaRepository<CollateralDep
     /** 统计全部确认存入总额 */
     @Query("SELECT COALESCE(SUM(d.usdAmount), 0) FROM CollateralDeposit d WHERE d.status = 'CONFIRMED'")
     BigDecimal sumAllConfirmedUsdAmount();
+
+    /** 统计时间段内存入笔数 */
+    long countByDepositedAtBetween(LocalDateTime start, LocalDateTime end);
 }

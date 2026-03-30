@@ -1,5 +1,6 @@
 package com.stablecoin.collateral.ml;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -48,15 +49,11 @@ public class MLRiskPredictorClient {
         }
 
         try {
-            // 调用 Python 脚本进行预测
             String pythonCode = buildPythonCode(features);
             String result = executePython(pythonCode);
-            
-            // 解析结果
             MLPredictionResult prediction = objectMapper.readValue(result, MLPredictionResult.class);
-            log.info("[MLPredictor] 风险预测完成: {} (置信度: {})", 
+            log.info("[MLPredictor] 风险预测完成: {} (置信度: {})",
                     prediction.getRiskLevel(), prediction.getConfidence());
-            
             return prediction;
         } catch (Exception e) {
             log.warn("[MLPredictor] ML 预测失败，返回默认结果: {}", e.getMessage());
@@ -70,9 +67,9 @@ public class MLRiskPredictorClient {
     }
 
     /**
-     * 构建 Python 代码
+     * 构建 Python 代码（声明抛出受检异常，由调用方的 catch(Exception) 统一处理）
      */
-    private String buildPythonCode(Map<String, Object> features) {
+    private String buildPythonCode(Map<String, Object> features) throws JsonProcessingException {
         return String.format("""
                 import sys
                 import json
@@ -104,10 +101,9 @@ public class MLRiskPredictorClient {
     private String executePython(String pythonCode) throws IOException, InterruptedException {
         ProcessBuilder pb = new ProcessBuilder("python", "-c", pythonCode);
         pb.redirectErrorStream(true);
-        
+
         Process process = pb.start();
-        
-        // 读取输出
+
         StringBuilder output = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream()))) {
@@ -116,28 +112,24 @@ public class MLRiskPredictorClient {
                 output.append(line);
             }
         }
-        
-        // 等待进程完成
+
         int exitCode = process.waitFor();
         if (exitCode != 0) {
             throw new RuntimeException("Python 脚本执行失败，退出码: " + exitCode);
         }
-        
+
         return output.toString();
     }
 
     /**
      * 批量预测
      */
-    public Map<String, MLPredictionResult> predictBatch(Map<String, Map<String, Object>> featuresList) {
+    public Map<String, MLPredictionResult> predictBatch(
+            Map<String, Map<String, Object>> featuresList) {
         Map<String, MLPredictionResult> results = new HashMap<>();
-        
         for (Map.Entry<String, Map<String, Object>> entry : featuresList.entrySet()) {
-            String key = entry.getKey();
-            Map<String, Object> features = entry.getValue();
-            results.put(key, predict(features));
+            results.put(entry.getKey(), predict(entry.getValue()));
         }
-        
         return results;
     }
 }

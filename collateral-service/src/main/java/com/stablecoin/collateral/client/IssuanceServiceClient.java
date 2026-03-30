@@ -54,7 +54,6 @@ public class IssuanceServiceClient {
             log.info("[IssuanceClient] 通知课题1暂停发行 -> HTTP {} ratio={} level={}",
                     response.getStatusCode(), reserveRatio, riskLevel);
         } catch (Exception e) {
-            // 课题1未启动时不影响课题2正常运行，仅记录警告
             log.warn("[IssuanceClient] 通知课题1暂停发行失败（课题1可能未启动）: {}", e.getMessage());
         }
     }
@@ -80,6 +79,37 @@ public class IssuanceServiceClient {
                     response.getStatusCode(), reserveRatio);
         } catch (Exception e) {
             log.warn("[IssuanceClient] 通知课题1恢复发行失败（课题1可能未启动）: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 请求课题1发行稳定币（当抵押物存入后可用稳定币余额不足时调用）
+     * 对应课题1接口：POST /api/issuance/mint
+     *
+     * @param amount   需要发行的稳定币金额（USD）
+     * @param txHash   触发发行的抵押物交易哈希（用于溯源）
+     * @param operator 操作员
+     * @return true = 课题1已受理；false = 请求失败（课题1未启动或拒绝）
+     */
+    public boolean requestIssuance(BigDecimal amount, String txHash, String operator) {
+        String url = baseUrl + "/api/issuance/mint";
+        Map<String, Object> body = new HashMap<>();
+        body.put("amount", amount);
+        body.put("collateralTxHash", txHash);
+        body.put("operator", operator);
+        body.put("source", "collateral-service");
+
+        try {
+            HttpEntity<Map<String, Object>> request = buildRequest(body);
+            ResponseEntity<String> response =
+                    restTemplate.postForEntity(url, request, String.class);
+            boolean accepted = response.getStatusCode().is2xxSuccessful();
+            log.info("[IssuanceClient] 请求发行稳定币 amount={} txHash={} -> HTTP {} accepted={}",
+                    amount, txHash, response.getStatusCode(), accepted);
+            return accepted;
+        } catch (Exception e) {
+            log.warn("[IssuanceClient] 请求课题1发行稳定币失败（课题1可能未启动）: {}", e.getMessage());
+            return false;
         }
     }
 

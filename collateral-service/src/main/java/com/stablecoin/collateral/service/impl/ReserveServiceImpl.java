@@ -41,33 +41,26 @@ public class ReserveServiceImpl implements ReserveService {
 
     @Value("${app.reserve.healthy-threshold:1.10}")
     private BigDecimal healthyThreshold;
-
     @Value("${app.reserve.normal-threshold:1.00}")
     private BigDecimal normalThreshold;
-
     @Value("${app.reserve.warning-threshold:0.90}")
     private BigDecimal warningThreshold;
-
     @Value("${app.reserve.low-risk-ratio-threshold:0.80}")
     private BigDecimal lowRiskRatioThreshold;
 
-    private final AtomicReference<BigDecimal> cachedSupply =
-            new AtomicReference<>(BigDecimal.ZERO);
-    
-    /** 缓存上一次的风险等级，用于检测风险变化 */
-    private final AtomicReference<String> lastRiskLevel =
-            new AtomicReference<>(ReserveSnapshot.RiskLevel.HEALTHY.name());
+    private final AtomicReference\u003cBigDecimal\u003e cachedSupply = new AtomicReference\u003c\u003e(BigDecimal.ZERO);
+    private final AtomicReference\u003cString\u003e lastRiskLevel = new AtomicReference\u003c\u003e(ReserveSnapshot.RiskLevel.HEALTHY.name());
+    private final AtomicReference\u003cBoolean\u003e lastLowRiskAlertTriggered = new AtomicReference\u003c\u003e(false);
 
-    /** 缓存上一次的低风险资产占比告警状态 */
-    private final AtomicReference<Boolean> lastLowRiskAlertTriggered =
-            new AtomicReference<>(false);
+    // ----------------------------------------------------------------
+    // checkAndSnapshot
+    // ----------------------------------------------------------------
 
     @Override
     @Transactional
     public ReserveSnapshot checkAndSnapshot() {
         ReservePool pool = getReservePool();
         BigDecimal supply = fetchStablecoinSupply();
-
         BigDecimal ratio;
         String riskLevel;
         if (supply.compareTo(BigDecimal.ZERO) == 0) {
@@ -77,7 +70,6 @@ public class ReserveServiceImpl implements ReserveService {
             ratio = pool.getTotalUsdAmount().divide(supply, 6, RoundingMode.HALF_UP);
             riskLevel = evaluateRiskLevel(ratio);
         }
-
         ReserveSnapshot snapshot = ReserveSnapshot.builder()
                 .reserveAmount(pool.getTotalUsdAmount())
                 .stablecoinSupply(supply)
@@ -86,52 +78,81 @@ public class ReserveServiceImpl implements ReserveService {
                 .snapshotAt(LocalDateTime.now())
                 .build();
         snapshotRepository.save(snapshot);
-
         log.info("[Reserve] snapshot: reserve={} supply={} ratio={} level={}",
                 pool.getTotalUsdAmount(), supply, ratio, riskLevel);
-
-        // 检查低风险资产占比
         checkLowRiskAssetRatio();
-
         handleRisk(ratio, riskLevel, pool.getTotalUsdAmount(), supply);
         return snapshot;
     }
 
+    // ----------------------------------------------------------------
+    // checkReserve - 课题1调用：验证储备，充足则持久化 supply
+    // ----------------------------------------------------------------
+
     @Override
+    @Transactional
     public ReserveCheckResponse checkReserve(BigDecimal stablecoinSupply) {
         ReservePool pool = getReservePool();
         BigDecimal ratio = stablecoinSupply.compareTo(BigDecimal.ZERO) == 0
                 ? new BigDecimal("999.999999")
                 : pool.getTotalUsdAmount().divide(stablecoinSupply, 6, RoundingMode.HALF_UP);
         String riskLevel = evaluateRiskLevel(ratio);
-        boolean available = ratio.compareTo(normalThreshold) >= 0;
+        boolean available = ratio.compareTo(normalThreshold) \u003e= 0;
+
+        String message;
+        if (available) {
+            // 储备充足：持久化流通量，供仪表盘和快照使用
+            BigDecimal previous = pool.getStablecoinSupply() != null
+                    ? pool.getStablecoinSupply() : BigDecimal.ZERO;
+            pool.setStablecoinSupply(stablecoinSupply);
+            reservePoolRepository.save(pool);
+            cachedSupply.set(stablecoinSupply);
+            log.info("[Reserve] checkReserve PASS: supply {} -> {} ratio={} level={}",
+                    previous, stablecoinSupply, ratio, riskLevel);
+            message = String.format(
+                    "储备充足，已记录流通量 %s USD，储备率 %.6f，风险等级 %s",
+                    stablecoinSupply.toPlainString(), ratio, riskLevel);
+        } else {
+            // 储备不足：不更新 supply，返回拒绝信息
+            log.warn("[Reserve] checkReserve FAIL: supply={} reserve={} ratio={} level={}",
+                    stablecoinSupply, pool.getTotalUsdAmount(), ratio, riskLevel);
+            message = String.format(
+                    "储备不足，无法支持发行 %s USD 稳定币。当前储备 %s USD，储备率 %.6f，" +
+                    "请先通过 POST /api/collateral/deposit 补充抵押物",
+                    stablecoinSupply.toPlainString(),
+                    pool.getTotalUsdAmount().toPlainString(), ratio);
+        }
+
         return ReserveCheckResponse.builder()
                 .reserveRatio(ratio)
                 .riskLevel(riskLevel)
                 .available(available)
                 .totalReserve(pool.getTotalUsdAmount())
                 .stablecoinSupply(stablecoinSupply)
-                .message(available ? "Reserve sufficient" : "Reserve insufficient, issuance suspended")
+                .message(message)
                 .build();
     }
+
+    // ----------------------------------------------------------------
+    // getDashboard
+    // ----------------------------------------------------------------
 
     @Override
     public DashboardResponse getDashboard() {
         ReservePool pool = getReservePool();
-        BigDecimal supply = cachedSupply.get();
+        // 优先使用持久化的流通量
+        BigDecimal supply = (pool.getStablecoinSupply() != null
+                && pool.getStablecoinSupply().compareTo(BigDecimal.ZERO) \u003e 0)
+                ? pool.getStablecoinSupply() : cachedSupply.get();
         BigDecimal ratio = supply.compareTo(BigDecimal.ZERO) == 0
                 ? new BigDecimal("999.999999")
                 : pool.getTotalUsdAmount().divide(supply, 6, RoundingMode.HALF_UP);
-
         long activeCount = alertRepository.findByStatusOrderByCreatedAtDesc(
                 RiskAlert.AlertStatus.ACTIVE.name()).size();
-
         BigDecimal assetTotal = assetRepository.sumTotalUsdValue();
-        BigDecimal annualIncome = assetRepository.estimateAnnualInterestIncome();
         BigDecimal lowRisk  = sumAssetByRisk(1);
         BigDecimal medRisk  = sumAssetByRisk(2);
         BigDecimal highRisk = sumAssetByRisk(3);
-
         return DashboardResponse.builder()
                 .totalReserve(pool.getTotalUsdAmount())
                 .lockedAmount(pool.getLockedAmount())
@@ -148,125 +169,88 @@ public class ReserveServiceImpl implements ReserveService {
                         : medRisk.divide(assetTotal, 6, RoundingMode.HALF_UP))
                 .highRiskRatio(assetTotal.compareTo(BigDecimal.ZERO) == 0 ? BigDecimal.ZERO
                         : highRisk.divide(assetTotal, 6, RoundingMode.HALF_UP))
-                .estimatedAnnualIncome(annualIncome)
+                .estimatedAnnualIncome(assetRepository.estimateAnnualInterestIncome())
                 .build();
     }
 
     @Override
-    public List<ReserveSnapshot> getHistory(LocalDateTime start, LocalDateTime end) {
+    public List\u003cReserveSnapshot\u003e getHistory(LocalDateTime start, LocalDateTime end) {
         return snapshotRepository.findBySnapshotAtBetweenOrderBySnapshotAtAsc(start, end);
     }
 
     @Override
     public BigDecimal fetchStablecoinSupply() {
+        // 优先级1：从课题1实时拉取
         BigDecimal supply = issuanceServiceClient.fetchTotalSupply();
         if (supply != null) {
             cachedSupply.set(supply);
             return supply;
         }
-        log.warn("[Reserve] Failed to fetch stablecoin supply, using cached: {}", cachedSupply.get());
+        // 优先级2：本地持久化缓存
+        ReservePool pool = getReservePool();
+        if (pool.getStablecoinSupply() != null
+                && pool.getStablecoinSupply().compareTo(BigDecimal.ZERO) \u003e 0) {
+            log.warn("[Reserve] 课题1不可达，使用持久化流通量: {}", pool.getStablecoinSupply());
+            cachedSupply.set(pool.getStablecoinSupply());
+            return pool.getStablecoinSupply();
+        }
+        // 优先级3：内存缓存
+        log.warn("[Reserve] 使用内存缓存流通量: {}", cachedSupply.get());
         return cachedSupply.get();
     }
 
-    // ---- private helpers ----
+    // ----------------------------------------------------------------
+    // private helpers
+    // ----------------------------------------------------------------
 
     private String evaluateRiskLevel(BigDecimal ratio) {
-        if (ratio.compareTo(healthyThreshold) >= 0) return ReserveSnapshot.RiskLevel.HEALTHY.name();
-        if (ratio.compareTo(normalThreshold)  >= 0) return ReserveSnapshot.RiskLevel.NORMAL.name();
-        if (ratio.compareTo(warningThreshold) >= 0) return ReserveSnapshot.RiskLevel.WARNING.name();
+        if (ratio.compareTo(healthyThreshold) \u003e= 0) return ReserveSnapshot.RiskLevel.HEALTHY.name();
+        if (ratio.compareTo(normalThreshold)  \u003e= 0) return ReserveSnapshot.RiskLevel.NORMAL.name();
+        if (ratio.compareTo(warningThreshold) \u003e= 0) return ReserveSnapshot.RiskLevel.WARNING.name();
         return ReserveSnapshot.RiskLevel.CRITICAL.name();
     }
 
-    /**
-     * 检查低风险资产占比是否满足要求（≥ 80%）
-     * 如果不满足，触发告警
-     */
     private void checkLowRiskAssetRatio() {
         BigDecimal totalAsset = assetRepository.sumTotalUsdValue();
-        if (totalAsset.compareTo(BigDecimal.ZERO) == 0) {
-            return;
-        }
-
-        BigDecimal lowRiskAsset = sumAssetByRisk(1);
-        BigDecimal lowRiskRatio = lowRiskAsset.divide(totalAsset, 6, RoundingMode.HALF_UP);
-
-        boolean isLowRiskInsufficient = lowRiskRatio.compareTo(lowRiskRatioThreshold) < 0;
-
-        log.info("[Reserve] 低风险资产占比检查: ratio={} threshold={} insufficient={}",
-                lowRiskRatio, lowRiskRatioThreshold, isLowRiskInsufficient);
-
-        // 检测告警状态变化
-        boolean previousAlertTriggered = lastLowRiskAlertTriggered.get();
-
-        if (isLowRiskInsufficient && !previousAlertTriggered) {
-            // 从充足变为不充足，触发告警
+        if (totalAsset.compareTo(BigDecimal.ZERO) == 0) return;
+        BigDecimal lowRiskRatio = sumAssetByRisk(1).divide(totalAsset, 6, RoundingMode.HALF_UP);
+        boolean insufficient = lowRiskRatio.compareTo(lowRiskRatioThreshold) \u003c 0;
+        boolean prev = lastLowRiskAlertTriggered.get();
+        if (insufficient \u0026\u0026 !prev) {
             BigDecimal gap = lowRiskRatioThreshold.subtract(lowRiskRatio);
             riskAlertService.triggerLowRiskAssetAlert(lowRiskRatio, gap);
             eventPublisher.publishLowRiskAssetAlert(lowRiskRatio, gap);
             lastLowRiskAlertTriggered.set(true);
-            log.warn("[Reserve] 低风险资产占比不足告警已触发: ratio={} gap={}", lowRiskRatio, gap);
-
-        } else if (!isLowRiskInsufficient && previousAlertTriggered) {
-            // 从不充足变为充足，清除告警
+            log.warn("[Reserve] 低风险资产不足: ratio={} gap={}", lowRiskRatio, gap);
+        } else if (!insufficient \u0026\u0026 prev) {
             riskAlertService.resolveLowRiskAssetAlert();
             eventPublisher.publishLowRiskAssetRecovered(lowRiskRatio);
             lastLowRiskAlertTriggered.set(false);
-            log.info("[Reserve] 低风险资产占比已恢复: ratio={}", lowRiskRatio);
+            log.info("[Reserve] 低风险资产已恢复: ratio={}", lowRiskRatio);
         }
     }
 
-    /**
-     * 风险处理：
-     * - WARNING / CRITICAL：保存告警 + 内部 MQ 广播 + 主动调用课题1 API 暂停发行 + 发布风险变化事件
-     * - HEALTHY：内部 MQ 广播恢复 + 主动调用课题1 API 恢复发行 + 发布风险变化事件
-     * 
-     * 风险变化事件由 AuditReportEventConsumer 异步消费，触发审计报告生成
-     */
     private void handleRisk(BigDecimal ratio, String riskLevel,
                             BigDecimal reserve, BigDecimal supply) {
-        String previousRiskLevel = lastRiskLevel.get();
-        boolean riskLevelChanged = !riskLevel.equals(previousRiskLevel);
-
+        String prev = lastRiskLevel.get();
+        boolean changed = !riskLevel.equals(prev);
         if (riskLevel.equals(ReserveSnapshot.RiskLevel.WARNING.name()) ||
             riskLevel.equals(ReserveSnapshot.RiskLevel.CRITICAL.name())) {
-
             BigDecimal gap = supply.subtract(reserve).max(BigDecimal.ZERO);
-
-            // 1. 保存内部风险告警记录
             riskAlertService.triggerReserveInsufficientAlert(ratio, gap);
-
-            // 2. 内部 MQ 广播告警
             eventPublisher.publishRiskAlert(riskLevel, ratio, gap);
-
-            // 3. 主动调用课题1 REST API，通知暂停稳定币发行
             issuanceServiceClient.notifyReserveInsufficient(ratio, riskLevel, gap);
-
-            // 4. 风险等级变化时发布事件，触发审计报告异步生成
-            if (riskLevelChanged) {
-                eventPublisher.publishRiskLevelChange(previousRiskLevel, riskLevel);
-                lastRiskLevel.set(riskLevel);
-            }
-
+            if (changed) { eventPublisher.publishRiskLevelChange(prev, riskLevel); lastRiskLevel.set(riskLevel); }
         } else if (riskLevel.equals(ReserveSnapshot.RiskLevel.HEALTHY.name())) {
-
-            // 1. 内部 MQ 广播恢复事件
             eventPublisher.publishReserveHealthy(ratio);
-
-            // 2. 主动调用课题1 REST API，通知恢复稳定币发行
             issuanceServiceClient.notifyReserveRecovered(ratio);
-
-            // 3. 风险等级变化时发布事件，触发审计报告异步生成
-            if (riskLevelChanged) {
-                eventPublisher.publishRiskLevelChange(previousRiskLevel, riskLevel);
-                lastRiskLevel.set(riskLevel);
-            }
+            if (changed) { eventPublisher.publishRiskLevelChange(prev, riskLevel); lastRiskLevel.set(riskLevel); }
         }
     }
 
     private BigDecimal sumAssetByRisk(Integer riskLevel) {
         return assetRepository.findByRiskLevelOrderByUsdValueDesc(riskLevel).stream()
-                .map(a -> a.getUsdValue())
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+                .map(a -> a.getUsdValue()).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private ReservePool getReservePool() {

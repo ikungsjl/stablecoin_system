@@ -61,7 +61,14 @@ public class RiskAlert {
     }
 
     public enum AlertType {
-        RESERVE_INSUFFICIENT, LARGE_REDEMPTION, DATA_INCONSISTENCY
+        /** 储备不足：总储备 < 稳定币流通量 */
+        RESERVE_INSUFFICIENT,
+        /** 大额赎回请求 */
+        LARGE_REDEMPTION,
+        /** 数据不一致 */
+        DATA_INCONSISTENCY,
+        /** 低风险资产占比不足 */
+        LOW_RISK_ASSET_INSUFFICIENT
     }
 
     public enum AlertStatus {

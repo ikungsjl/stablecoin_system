@@ -24,6 +24,14 @@ public class ReservePool {
     @Column(name = "locked_amount", nullable = false, precision = 20, scale = 6)
     private BigDecimal lockedAmount;
 
+    /**
+     * 稳定币流通量（USD）
+     * 由课题1通过 POST /api/supply/notify 接口推送更新
+     * 同时作为 fetchStablecoinSupply() 的本地缓存，课题1不可达时使用此值
+     */
+    @Column(name = "stablecoin_supply", nullable = false, precision = 20, scale = 6)
+    private BigDecimal stablecoinSupply;
+
     @Column(name = "last_updated", nullable = false)
     private LocalDateTime lastUpdated;
 
@@ -33,6 +41,7 @@ public class ReservePool {
         this.lastUpdated = LocalDateTime.now();
         if (this.totalUsdAmount == null) this.totalUsdAmount = BigDecimal.ZERO;
         if (this.lockedAmount == null) this.lockedAmount = BigDecimal.ZERO;
+        if (this.stablecoinSupply == null) this.stablecoinSupply = BigDecimal.ZERO;
     }
 
     @Transient
